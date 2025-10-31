@@ -1,0 +1,338 @@
+---
+- name: Get OpenShift Pods by Label
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars:
+    ocp_host_api: "https://api.oct2025.lab.psi.pnq2.redhat.com:6443"
+    project_name: "project1"
+    label_selector: "app=frontend"
+
+  tasks:
+    - name: Login to OpenShift
+      redhat.openshift.openshift_auth:
+        host: "{{ ocp_host_api }}"
+        username: "kubeadmin"
+        password: "Pyjno-4AMb4-rSdhb-JivJ4"
+        validate_certs: false
+      register: ocp_auth
+
+    - name: Get pods by label
+      kubernetes.core.k8s_info:
+        host: "{{ ocp_host_api }}"
+        api_key: "{{ ocp_auth.openshift_auth.api_key }}"
+        kind: Pod
+        namespace: "{{ project_name }}"
+        label_selectors:
+          - "{{ label_selector }}"
+        validate_certs: false
+      register: pod_info
+
+    - name: Display pod list in readable format (table)
+      ansible.builtin.debug:
+        msg: "{{ output.split('\n') }}"
+      vars:
+        output: |
+          NAME                     READY   STATUS    RESTARTS   AGE
+          {% for pod in pod_info.resources %}
+          {{ "%-25s %-6s %-9s %-9s %s" | format(
+              pod.metadata.name,
+              (pod.status.containerStatuses[0].ready | ternary('1/1','0/1')),
+              pod.status.phase,
+              pod.status.containerStatuses[0].restartCount,
+              pod.metadata.creationTimestamp
+          ) }}
+          {% endfor %}
+		  
+		  
+---
+- name: Terminate a Single Pod
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars:
+    ocp_host_api: "https://api.oct2025.lab.psi.pnq2.redhat.com:6443"
+    project_name: "project1"
+    pod_name: "frontend-v1-d5f78f85f-7nf54"
+    username: "kubeadmin"
+    password: "Pyjno-4AMb4-rSdhb-JivJ4"
+
+  tasks:
+    - name: Login to OpenShift
+      redhat.openshift.openshift_auth:
+        host: "{{ ocp_host_api }}"
+        username: "{{ username }}"
+        password: "{{ password }}"
+        validate_certs: false
+      register: ocp_auth
+
+    - name: Delete the pod
+      kubernetes.core.k8s:
+        host: "{{ ocp_host_api }}"
+        api_key: "{{ ocp_auth.openshift_auth.api_key }}"
+        validate_certs: false
+        namespace: "{{ project_name }}"
+        kind: Pod
+        name: "{{ pod_name }}"
+        state: absent
+        wait: true
+
+    - name: Pod deletion complete message
+      debug:
+        msg: "Pod {{ pod_name }} deleted successfully."
+		
+
+---
+- name: Terminate Pods by Label
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars:
+    ocp_host_api: "https://api.oct2025.lab.psi.pnq2.redhat.com:6443"
+    project_name: "project1"
+    label_selector: "app=frontend"
+    username: "kubeadmin"
+    password: "Pyjno-4AMb4-rSdhb-JivJ4"
+
+  tasks:
+    - name: Login to OpenShift
+      redhat.openshift.openshift_auth:
+        host: "{{ ocp_host_api }}"
+        username: "{{ username }}"
+        password: "{{ password }}"
+        validate_certs: false
+      register: ocp_auth
+
+    - name: Get pods by label
+      kubernetes.core.k8s_info:
+        host: "{{ ocp_host_api }}"
+        api_key: "{{ ocp_auth.openshift_auth.api_key }}"
+        validate_certs: false
+        kind: Pod
+        namespace: "{{ project_name }}"
+        label_selectors:
+          - "{{ label_selector }}"
+      register: pods_list
+
+    - name: Delete matching pods
+      kubernetes.core.k8s:
+        host: "{{ ocp_host_api }}"
+        api_key: "{{ ocp_auth.openshift_auth.api_key }}"
+        validate_certs: false
+        namespace: "{{ project_name }}"
+        kind: Pod
+        name: "{{ item.metadata.name }}"
+        state: absent
+        wait: true
+      loop: "{{ pods_list.resources }}"
+
+    - name: Done
+      debug:
+        msg: "All pods matching label {{ label_selector }} deleted."
+		
+---
+- name: Get Deployments in Project
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars:
+    ocp_host_api: "https://api.oct2025.lab.psi.pnq2.redhat.com:6443"
+    project_name: "project1"
+    username: "kubeadmin"
+    password: "Pyjno-4AMb4-rSdhb-JivJ4"
+
+  tasks:
+    - name: Login to OpenShift
+      redhat.openshift.openshift_auth:
+        host: "{{ ocp_host_api }}"
+        username: "{{ username }}"
+        password: "{{ password }}"
+        validate_certs: false
+      register: ocp_auth
+
+    - name: Get deployments
+      kubernetes.core.k8s_info:
+        host: "{{ ocp_host_api }}"
+        api_key: "{{ ocp_auth.openshift_auth.api_key }}"
+        validate_certs: false
+        kind: Deployment
+        namespace: "{{ project_name }}"
+      register: deployments
+
+    - name: Display deployments (table)
+      debug:
+        msg: "{{ output.split('\n') }}"
+      vars:
+        output: |
+          NAME                      READY   UP-TO-DATE   AVAILABLE   AGE
+          {% for d in deployments.resources %}
+          {{ "%-25s %-6s %-11s %-11s %s" | format(
+              d.metadata.name,
+              d.status.readyReplicas | default(0),
+              d.status.updatedReplicas | default(0),
+              d.status.availableReplicas | default(0),
+              d.metadata.creationTimestamp
+          ) }}
+          {% endfor %}
+		  
+
+---
+- name: Scale OpenShift Deployment (API-based)
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars:
+    ocp_host_api: "https://api.oct2025.lab.psi.pnq2.redhat.com:6443"
+    project_name: "project1"
+    deployment_name: "frontend-v1"
+    desired_replicas: 3
+
+  tasks:
+    - name: Login to OpenShift and obtain API token
+      redhat.openshift.openshift_auth:
+        host: "{{ ocp_host_api }}"
+        username: "kubeadmin"
+        password: "Pyjno-4AMb4-rSdhb-JivJ4"
+        validate_certs: false
+      register: ocp_auth
+
+
+
+    - name: Check if Deployment exists
+      kubernetes.core.k8s_info:
+        host: "{{ ocp_host_api }}"
+        api_key: "{{ ocp_auth.openshift_auth.api_key }}"
+        validate_certs: false
+        kind: Deployment
+        namespace: "{{ project_name }}"
+        name: "{{ deployment_name }}"
+      register: deployment_check
+      failed_when: false
+
+    - name: Fail if deployment does not exist
+      ansible.builtin.fail:
+        msg: "Deployment '{{ deployment_name }}' not found in namespace '{{ project_name }}'. Aborting."
+      when: deployment_check.resources | length == 0
+
+    - name: Scale Deployment
+      kubernetes.core.k8s:
+        host: "{{ ocp_host_api }}"
+        api_key: "{{ ocp_auth.openshift_auth.api_key }}"
+        validate_certs: false
+        state: present
+        kind: Deployment
+        namespace: "{{ project_name }}"
+        name: "{{ deployment_name }}"
+        merge_type: strategic-merge
+        definition:
+          spec:
+            replicas: "{{ desired_replicas }}"
+			
+			
+---
+- name: Get DeploymentConfigs in Project
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars:
+    ocp_host_api: "https://api.oct2025.lab.psi.pnq2.redhat.com:6443"
+    project_name: "project1"
+    username: "kubeadmin"
+    password: "Pyjno-4AMb4-rSdhb-JivJ4"
+
+  tasks:
+    - name: Login
+      redhat.openshift.openshift_auth:
+        host: "{{ ocp_host_api }}"
+        username: "{{ username }}"
+        password: "{{ password }}"
+        validate_certs: false
+      register: ocp_auth
+
+    - name: Get DCs
+      kubernetes.core.k8s_info:
+        host: "{{ ocp_host_api }}"
+        api_key: "{{ ocp_auth.openshift_auth.api_key }}"
+        validate_certs: false
+        api_version: "apps.openshift.io/v1"
+        kind: DeploymentConfig
+        namespace: "{{ project_name }}"
+      register: dcs
+
+    - name: Display DCs (table)
+      debug:
+        msg: "{{ output.split('\n') }}"
+      vars:
+        output: |
+          NAME                      REVISION   DESIRED   CURRENT   TRIGGERED BY
+          {% for dc in dcs.resources %}
+          {{ "%-25s %-9s %-9s %-8s %s" | format(
+              dc.metadata.name,
+              dc.status.latestVersion | default("N/A"),
+              dc.status.replicas | default(0),
+              dc.status.readyReplicas | default(0),
+              (dc.spec.triggers | map(attribute='type') | list | join(",")) | default("manual")
+          ) }}
+          {% endfor %}
+		  
+		  
+---
+- name: Scale DeploymentConfig
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars:
+    ocp_host_api: "https://api.oct2025.lab.psi.pnq2.redhat.com:6443"
+    project_name: "project1"
+    dc_name: "nginx-sample"
+    desired_replicas: 2
+    username: "kubeadmin"
+    password: "Pyjno-4AMb4-rSdhb-JivJ4"
+
+  tasks:
+    - name: Login
+      redhat.openshift.openshift_auth:
+        host: "{{ ocp_host_api }}"
+        username: "{{ username }}"
+        password: "{{ password }}"
+        validate_certs: false
+      register: ocp_auth
+
+    - name: Check DC exists
+      kubernetes.core.k8s_info:
+        host: "{{ ocp_host_api }}"
+        api_key: "{{ ocp_auth.openshift_auth.api_key }}"
+        validate_certs: false
+        api_version: "apps.openshift.io/v1"
+        kind: DeploymentConfig
+        namespace: "{{ project_name }}"
+        name: "{{ dc_name }}"
+      register: dc_check
+      failed_when: false
+
+    - name: Fail if missing
+      fail:
+        msg: "DeploymentConfig '{{ dc_name }}' not found"
+      when: dc_check.resources | length == 0
+
+    - name: Scale DC
+      kubernetes.core.k8s:
+        host: "{{ ocp_host_api }}"
+        api_key: "{{ ocp_auth.openshift_auth.api_key }}"
+        validate_certs: false
+        api_version: "apps.openshift.io/v1"
+        kind: DeploymentConfig
+        namespace: "{{ project_name }}"
+        name: "{{ dc_name }}"
+        state: present
+        merge_type: merge
+        definition:
+          spec:
+            replicas: "{{ desired_replicas }}"
